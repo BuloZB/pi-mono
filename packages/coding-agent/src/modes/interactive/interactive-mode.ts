@@ -2109,7 +2109,6 @@ export class InteractiveMode {
 					for (const content of this.streamingMessage.content) {
 						if (content.type === "toolCall") {
 							if (!this.pendingTools.has(content.id)) {
-								this.chatContainer.addChild(new Text("", 0, 0));
 								const component = new ToolExecutionComponent(
 									content.name,
 									content.arguments,
@@ -2612,8 +2611,14 @@ export class InteractiveMode {
 	}
 
 	private handleCtrlZ(): void {
+		// Ignore SIGINT while suspended so Ctrl+C in the terminal does not
+		// kill the backgrounded process. The handler is removed on resume.
+		const ignoreSigint = () => {};
+		process.on("SIGINT", ignoreSigint);
+
 		// Set up handler to restore TUI when resumed
 		process.once("SIGCONT", () => {
+			process.removeListener("SIGINT", ignoreSigint);
 			this.ui.start();
 			this.ui.requestRender(true);
 		});
@@ -3443,31 +3448,34 @@ export class InteractiveMode {
 					let wantsSummary = false;
 					let customInstructions: string | undefined;
 
-					while (true) {
-						const summaryChoice = await this.showExtensionSelector("Summarize branch?", [
-							"No summary",
-							"Summarize",
-							"Summarize with custom prompt",
-						]);
+					// Check if we should skip the prompt (user preference to always default to no summary)
+					if (!this.settingsManager.getBranchSummarySkipPrompt()) {
+						while (true) {
+							const summaryChoice = await this.showExtensionSelector("Summarize branch?", [
+								"No summary",
+								"Summarize",
+								"Summarize with custom prompt",
+							]);
 
-						if (summaryChoice === undefined) {
-							// User pressed escape - re-show tree selector with same selection
-							this.showTreeSelector(entryId);
-							return;
-						}
-
-						wantsSummary = summaryChoice !== "No summary";
-
-						if (summaryChoice === "Summarize with custom prompt") {
-							customInstructions = await this.showExtensionEditor("Custom summarization instructions");
-							if (customInstructions === undefined) {
-								// User cancelled - loop back to summary selector
-								continue;
+							if (summaryChoice === undefined) {
+								// User pressed escape - re-show tree selector with same selection
+								this.showTreeSelector(entryId);
+								return;
 							}
-						}
 
-						// User made a complete choice
-						break;
+							wantsSummary = summaryChoice !== "No summary";
+
+							if (summaryChoice === "Summarize with custom prompt") {
+								customInstructions = await this.showExtensionEditor("Custom summarization instructions");
+								if (customInstructions === undefined) {
+									// User cancelled - loop back to summary selector
+									continue;
+								}
+							}
+
+							// User made a complete choice
+							break;
+						}
 					}
 
 					// Set up escape handler and loader if summarizing

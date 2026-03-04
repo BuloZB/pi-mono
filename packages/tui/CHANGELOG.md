@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed TUI width calculation for regional indicator symbols (e.g. partial flag sequences like `🇨` during streaming) to prevent wrap drift and stale character artifacts in differential rendering.
+- Fixed Kitty CSI-u handling to ignore unsupported modifiers so modifier-only events do not insert stray printable characters ([#1807](https://github.com/badlogic/pi-mono/issues/1807))
+
+## [0.55.4] - 2026-03-02
+
+## [0.55.3] - 2026-02-27
+
+## [0.55.2] - 2026-02-27
+
 ## [0.55.1] - 2026-02-26
 
 ### Fixed
