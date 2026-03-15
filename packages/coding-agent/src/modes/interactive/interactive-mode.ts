@@ -8,14 +8,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import {
-	type AssistantMessage,
-	getOAuthProviders,
-	type ImageContent,
-	type Message,
-	type Model,
-	type OAuthProvider,
-} from "@mariozechner/pi-ai";
+import type { AssistantMessage, ImageContent, Message, Model, OAuthProviderId } from "@mariozechner/pi-ai";
 import type {
 	AutocompleteItem,
 	EditorAction,
@@ -460,15 +453,15 @@ export class InteractiveMode {
 		this.setupKeyHandlers();
 		this.setupEditorSubmitHandler();
 
+		// Start the UI before initializing extensions so session_start handlers can use interactive dialogs
+		this.ui.start();
+		this.isInitialized = true;
+
 		// Initialize extensions first so resources are shown before messages
 		await this.initExtensions();
 
 		// Render initial messages AFTER showing loaded resources
 		this.renderInitialMessages();
-
-		// Start the UI
-		this.ui.start();
-		this.isInitialized = true;
 
 		// Set terminal title
 		this.updateTerminalTitle();
@@ -516,6 +509,13 @@ export class InteractiveMode {
 		this.checkForNewVersion().then((newVersion) => {
 			if (newVersion) {
 				this.showNewVersionNotification(newVersion);
+			}
+		});
+
+		// Check tmux keyboard setup asynchronously
+		this.checkTmuxKeyboardSetup().then((warning) => {
+			if (warning) {
+				this.showWarning(warning);
 			}
 		});
 
@@ -591,6 +591,50 @@ export class InteractiveMode {
 		} catch {
 			return undefined;
 		}
+	}
+
+	private async checkTmuxKeyboardSetup(): Promise<string | undefined> {
+		if (!process.env.TMUX) return undefined;
+
+		const runTmuxShow = (option: string): Promise<string | undefined> => {
+			return new Promise((resolve) => {
+				const proc = spawn("tmux", ["show", "-gv", option], {
+					stdio: ["ignore", "pipe", "ignore"],
+				});
+				let stdout = "";
+				const timer = setTimeout(() => {
+					proc.kill();
+					resolve(undefined);
+				}, 2000);
+
+				proc.stdout?.on("data", (data) => {
+					stdout += data.toString();
+				});
+				proc.on("error", () => {
+					clearTimeout(timer);
+					resolve(undefined);
+				});
+				proc.on("close", (code) => {
+					clearTimeout(timer);
+					resolve(code === 0 ? stdout.trim() : undefined);
+				});
+			});
+		};
+
+		const [extendedKeys, extendedKeysFormat] = await Promise.all([
+			runTmuxShow("extended-keys"),
+			runTmuxShow("extended-keys-format"),
+		]);
+
+		if (extendedKeys !== "on" && extendedKeys !== "always") {
+			return "tmux extended-keys is off. Modified Enter keys may not work. Add `set -g extended-keys on` to ~/.tmux.conf and restart tmux.";
+		}
+
+		if (extendedKeysFormat === "xterm") {
+			return "tmux extended-keys-format is xterm. Pi works best with csi-u. Add `set -g extended-keys-format csi-u` to ~/.tmux.conf and restart tmux.";
+		}
+
+		return undefined;
 	}
 
 	/**
@@ -1413,7 +1457,7 @@ export class InteractiveMode {
 			custom: (factory, options) => this.showExtensionCustom(factory, options),
 			pasteToEditor: (text) => this.editor.handleInput(`\x1b[200~${text}\x1b[201~`),
 			setEditorText: (text) => this.editor.setText(text),
-			getEditorText: () => this.editor.getText(),
+			getEditorText: () => this.editor.getExpandedText?.() ?? this.editor.getText(),
 			editor: (title, prefill) => this.showExtensionEditor(title, prefill),
 			setEditorComponent: (factory) => this.setCustomEditorComponent(factory),
 			get theme() {
@@ -1641,10 +1685,18 @@ export class InteractiveMode {
 			// Use duck typing since instanceof fails across jiti module boundaries
 			const customEditor = newEditor as unknown as Record<string, unknown>;
 			if ("actionHandlers" in customEditor && customEditor.actionHandlers instanceof Map) {
-				customEditor.onEscape = () => this.defaultEditor.onEscape?.();
-				customEditor.onCtrlD = () => this.defaultEditor.onCtrlD?.();
-				customEditor.onPasteImage = () => this.defaultEditor.onPasteImage?.();
-				customEditor.onExtensionShortcut = (data: string) => this.defaultEditor.onExtensionShortcut?.(data);
+				if (!customEditor.onEscape) {
+					customEditor.onEscape = () => this.defaultEditor.onEscape?.();
+				}
+				if (!customEditor.onCtrlD) {
+					customEditor.onCtrlD = () => this.defaultEditor.onCtrlD?.();
+				}
+				if (!customEditor.onPasteImage) {
+					customEditor.onPasteImage = () => this.defaultEditor.onPasteImage?.();
+				}
+				if (!customEditor.onExtensionShortcut) {
+					customEditor.onExtensionShortcut = (data: string) => this.defaultEditor.onExtensionShortcut?.(data);
+				}
 				// Copy action handlers (clear, suspend, model switching, etc.)
 				for (const [action, handler] of this.defaultEditor.actionHandlers) {
 					(customEditor.actionHandlers as Map<string, () => void>).set(action, handler);
@@ -2765,6 +2817,7 @@ export class InteractiveMode {
 			// Spawn editor synchronously with inherited stdio for interactive editing
 			const result = spawnSync(editor, [...editorArgs, tmpFile], {
 				stdio: "inherit",
+				shell: process.platform === "win32",
 			});
 
 			// On successful exit (status 0), replace editor content
@@ -3052,6 +3105,7 @@ export class InteractiveMode {
 					hideThinkingBlock: this.hideThinkingBlock,
 					collapseChangelog: this.settingsManager.getCollapseChangelog(),
 					doubleEscapeAction: this.settingsManager.getDoubleEscapeAction(),
+					treeFilterMode: this.settingsManager.getTreeFilterMode(),
 					showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
 					editorPaddingX: this.settingsManager.getEditorPaddingX(),
 					autocompleteMaxVisible: this.settingsManager.getAutocompleteMaxVisible(),
@@ -3130,6 +3184,9 @@ export class InteractiveMode {
 					},
 					onDoubleEscapeActionChange: (action) => {
 						this.settingsManager.setDoubleEscapeAction(action);
+					},
+					onTreeFilterModeChange: (mode) => {
+						this.settingsManager.setTreeFilterMode(mode);
 					},
 					onShowHardwareCursorChange: (enabled) => {
 						this.settingsManager.setShowHardwareCursor(enabled);
@@ -3307,13 +3364,11 @@ export class InteractiveMode {
 		// Helper to update session's scoped models (session-only, no persist)
 		const updateSessionModels = async (enabledIds: Set<string>) => {
 			if (enabledIds.size > 0 && enabledIds.size < allModels.length) {
-				// Use current session thinking level, not settings default
-				const currentThinkingLevel = this.session.thinkingLevel;
 				const newScopedModels = await resolveModelScope(Array.from(enabledIds), this.session.modelRegistry);
 				this.session.setScopedModels(
 					newScopedModels.map((sm) => ({
 						model: sm.model,
-						thinkingLevel: sm.thinkingLevel ?? currentThinkingLevel,
+						thinkingLevel: sm.thinkingLevel,
 					})),
 				);
 			} else {
@@ -3422,6 +3477,7 @@ export class InteractiveMode {
 	private showTreeSelector(initialSelectedId?: string): void {
 		const tree = this.sessionManager.getTree();
 		const realLeafId = this.sessionManager.getLeafId();
+		const initialFilterMode = this.settingsManager.getTreeFilterMode();
 
 		if (tree.length === 0) {
 			this.showStatus("No entries in session");
@@ -3540,6 +3596,7 @@ export class InteractiveMode {
 					this.ui.requestRender();
 				},
 				initialSelectedId,
+				initialFilterMode,
 			);
 			return { component: selector, focus: selector };
 		});
@@ -3627,7 +3684,9 @@ export class InteractiveMode {
 						await this.showLoginDialog(providerId);
 					} else {
 						// Logout flow
-						const providerInfo = getOAuthProviders().find((p) => p.id === providerId);
+						const providerInfo = this.session.modelRegistry.authStorage
+							.getOAuthProviders()
+							.find((p) => p.id === providerId);
 						const providerName = providerInfo?.name || providerId;
 
 						try {
@@ -3650,7 +3709,7 @@ export class InteractiveMode {
 	}
 
 	private async showLoginDialog(providerId: string): Promise<void> {
-		const providerInfo = getOAuthProviders().find((p) => p.id === providerId);
+		const providerInfo = this.session.modelRegistry.authStorage.getOAuthProviders().find((p) => p.id === providerId);
 		const providerName = providerInfo?.name || providerId;
 
 		// Providers that use callback servers (can paste redirect URL)
@@ -3684,7 +3743,7 @@ export class InteractiveMode {
 		};
 
 		try {
-			await this.session.modelRegistry.authStorage.login(providerId as OAuthProvider, {
+			await this.session.modelRegistry.authStorage.login(providerId as OAuthProviderId, {
 				onAuth: (info: { url: string; instructions?: string }) => {
 					dialog.showAuth(info.url, info.instructions);
 
@@ -4165,6 +4224,7 @@ export class InteractiveMode {
 		await this.session.newSession();
 
 		// Clear UI state
+		this.headerContainer.clear();
 		this.chatContainer.clear();
 		this.pendingMessagesContainer.clear();
 		this.compactionQueuedMessages = [];
