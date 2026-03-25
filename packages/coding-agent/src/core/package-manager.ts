@@ -7,6 +7,7 @@ import ignore from "ignore";
 import { minimatch } from "minimatch";
 import { CONFIG_DIR_NAME } from "../config.js";
 import { type GitSource, parseGitUrl } from "../utils/git.js";
+import { isStdoutTakenOver } from "./output-guard.js";
 import type { PackageSource, SettingsManager } from "./settings-manager.js";
 
 const NETWORK_TIMEOUT_MS = 10000;
@@ -1278,20 +1279,66 @@ export class DefaultPackageManager implements PackageManager {
 		return match[1];
 	}
 
-	private async getLocalGitUpdateTarget(installedPath: string): Promise<{ ref: string; head: string }> {
+	private async getLocalGitUpdateTarget(
+		installedPath: string,
+	): Promise<{ ref: string; head: string; fetchArgs: string[] }> {
 		try {
+			const upstream = await this.runCommandCapture("git", ["rev-parse", "--abbrev-ref", "@{upstream}"], {
+				cwd: installedPath,
+				timeoutMs: NETWORK_TIMEOUT_MS,
+			});
+			const trimmedUpstream = upstream.trim();
+			if (!trimmedUpstream.startsWith("origin/")) {
+				throw new Error(`Unsupported upstream remote: ${trimmedUpstream}`);
+			}
+			const branch = trimmedUpstream.slice("origin/".length);
+			if (!branch) {
+				throw new Error("Missing upstream branch name");
+			}
 			const head = await this.runCommandCapture("git", ["rev-parse", "@{upstream}"], {
 				cwd: installedPath,
 				timeoutMs: NETWORK_TIMEOUT_MS,
 			});
-			return { ref: "@{upstream}", head };
+			return {
+				ref: "@{upstream}",
+				head,
+				fetchArgs: [
+					"fetch",
+					"--prune",
+					"--no-tags",
+					"origin",
+					`+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+				],
+			};
 		} catch {
 			await this.runCommand("git", ["remote", "set-head", "origin", "-a"], { cwd: installedPath }).catch(() => {});
 			const head = await this.runCommandCapture("git", ["rev-parse", "origin/HEAD"], {
 				cwd: installedPath,
 				timeoutMs: NETWORK_TIMEOUT_MS,
 			});
-			return { ref: "origin/HEAD", head };
+			const originHeadRef = await this.runCommandCapture("git", ["symbolic-ref", "refs/remotes/origin/HEAD"], {
+				cwd: installedPath,
+				timeoutMs: NETWORK_TIMEOUT_MS,
+			}).catch(() => "");
+			const branch = originHeadRef.trim().replace(/^refs\/remotes\/origin\//, "");
+			if (branch) {
+				return {
+					ref: "origin/HEAD",
+					head,
+					fetchArgs: [
+						"fetch",
+						"--prune",
+						"--no-tags",
+						"origin",
+						`+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+					],
+				};
+			}
+			return {
+				ref: "origin/HEAD",
+				head,
+				fetchArgs: ["fetch", "--prune", "--no-tags", "origin", "+HEAD:refs/remotes/origin/HEAD"],
+			};
 		}
 	}
 
@@ -1477,15 +1524,20 @@ export class DefaultPackageManager implements PackageManager {
 			return;
 		}
 
-		// Fetch latest from remote (handles force-push by getting new history)
-		await this.runCommand("git", ["fetch", "--prune", "origin"], { cwd: targetDir });
+		const target = await this.getLocalGitUpdateTarget(targetDir);
+
+		// Fetch only the ref we will reset to, avoiding unrelated branch/tag noise.
+		await this.runCommand("git", target.fetchArgs, { cwd: targetDir });
 
 		const localHead = await this.runCommandCapture("git", ["rev-parse", "HEAD"], {
 			cwd: targetDir,
 			timeoutMs: NETWORK_TIMEOUT_MS,
 		});
-		const target = await this.getLocalGitUpdateTarget(targetDir);
-		if (localHead.trim() === target.head.trim()) {
+		const refreshedTargetHead = await this.runCommandCapture("git", ["rev-parse", target.ref], {
+			cwd: targetDir,
+			timeoutMs: NETWORK_TIMEOUT_MS,
+		});
+		if (localHead.trim() === refreshedTargetHead.trim()) {
 			return;
 		}
 
@@ -2091,7 +2143,7 @@ export class DefaultPackageManager implements PackageManager {
 		return new Promise((resolvePromise, reject) => {
 			const child = spawn(command, args, {
 				cwd: options?.cwd,
-				stdio: "inherit",
+				stdio: isStdoutTakenOver() ? ["ignore", 2, 2] : "inherit",
 				shell: process.platform === "win32",
 			});
 			child.on("error", reject);

@@ -21,6 +21,7 @@ import type { LoadExtensionsResult } from "./core/extensions/index.js";
 import { migrateKeybindingsConfigFile } from "./core/keybindings.js";
 import { ModelRegistry } from "./core/model-registry.js";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.js";
+import { restoreStdout, takeOverStdout } from "./core/output-guard.js";
 import { DefaultPackageManager } from "./core/package-manager.js";
 import { DefaultResourceLoader } from "./core/resource-loader.js";
 import { type CreateAgentSessionOptions, createAgentSession } from "./core/sdk.js";
@@ -635,11 +636,15 @@ export async function main(args: string[]) {
 		return;
 	}
 
-	// Run migrations (pass cwd for project-local migrations)
-	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(process.cwd());
-
 	// First pass: parse args to get --extension paths
 	const firstPass = parseArgs(args);
+	const shouldTakeOverStdout = firstPass.mode !== undefined || firstPass.print || !process.stdin.isTTY;
+	if (shouldTakeOverStdout) {
+		takeOverStdout();
+	}
+
+	// Run migrations (pass cwd for project-local migrations)
+	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(process.cwd());
 
 	// Early load extensions to discover their CLI flags
 	const cwd = process.cwd();
@@ -877,16 +882,17 @@ export async function main(args: string[]) {
 		printTimings();
 		await interactiveMode.run();
 	} else {
-		await runPrintMode(session, {
+		const exitCode = await runPrintMode(session, {
 			mode,
 			messages: parsed.messages,
 			initialMessage,
 			initialImages,
 		});
 		stopThemeWatcher();
-		if (process.stdout.writableLength > 0) {
-			await new Promise<void>((resolve) => process.stdout.once("drain", resolve));
+		restoreStdout();
+		if (exitCode !== 0) {
+			process.exitCode = exitCode;
 		}
-		process.exit(0);
+		return;
 	}
 }
