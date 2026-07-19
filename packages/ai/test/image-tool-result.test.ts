@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import type { Api, Context, Model, Tool, ToolResultMessage } from "../src/index.ts";
-import { complete, getModel } from "../src/index.ts";
+import type { Api, Context, Model, Tool, ToolResultMessage } from "../src/compat.ts";
+import { complete, getModel } from "../src/compat.ts";
 import type { StreamOptions } from "../src/types.ts";
 
 type StreamOptionsWithExtras = StreamOptions & Record<string, unknown>;
@@ -381,8 +381,8 @@ describe("Tool Results with Images", () => {
 		},
 	);
 
-	describe.skipIf(!process.env.KIMI_API_KEY)("Kimi For Coding Provider (kimi-for-coding)", () => {
-		const llm = getModel("kimi-coding", "kimi-for-coding");
+	describe.skipIf(!process.env.KIMI_API_KEY)("Kimi For Coding Provider (k2p7)", () => {
+		const llm = getModel("kimi-coding", "k2p7");
 
 		it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
 			await handleToolWithImageResult(llm);

@@ -46,6 +46,7 @@ export interface Args {
 	listModels?: string | true;
 	offline?: boolean;
 	verbose?: boolean;
+	projectTrustOverride?: boolean;
 	messages: string[];
 	fileArgs: string[];
 	/** Unknown flags (potentially extension flags) - map of flag name to value */
@@ -53,7 +54,7 @@ export interface Args {
 	diagnostics: Array<{ type: "warning" | "error"; message: string }>;
 }
 
-const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export function isValidThinkingLevel(level: string): level is ThinkingLevel {
 	return VALID_THINKING_LEVELS.includes(level as ThinkingLevel);
@@ -176,6 +177,10 @@ export function parseArgs(args: string[]): Args {
 			}
 		} else if (arg === "--verbose") {
 			result.verbose = true;
+		} else if (arg === "--approve" || arg === "-a") {
+			result.projectTrustOverride = true;
+		} else if (arg === "--no-approve" || arg === "-na") {
+			result.projectTrustOverride = false;
 		} else if (arg === "--offline") {
 			result.offline = true;
 		} else if (arg.startsWith("@")) {
@@ -224,10 +229,10 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} install <source> [-l]     Install extension source and add to settings
   ${APP_NAME} remove <source> [-l]      Remove extension source from settings
   ${APP_NAME} uninstall <source> [-l]   Alias for remove
-  ${APP_NAME} update [source|self|pi]   Update pi and installed extensions
+  ${APP_NAME} update [source|self|pi]   Update pi, extensions, or model catalogs
   ${APP_NAME} list                      List installed extensions from settings
-  ${APP_NAME} config                    Open TUI to enable/disable package resources
-  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list
+  ${APP_NAME} config [-l]               Open TUI to enable/disable package resources (Tab switches scope)
+  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config
 
 ${chalk.bold("Options:")}
   --provider <name>              Provider name (default: google)
@@ -253,7 +258,7 @@ ${chalk.bold("Options:")}
                                  Applies to built-in, extension, and custom tools
   --exclude-tools, -xt <tools>   Comma-separated denylist of tool names to disable
                                  Applies to built-in, extension, and custom tools
-  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh
+  --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh, max
   --extension, -e <path>         Load an extension file (can be used multiple times)
   --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)
   --skill <path>                 Load a skill file or directory (can be used multiple times)
@@ -266,6 +271,8 @@ ${chalk.bold("Options:")}
   --export <file>                Export session file to HTML and exit
   --list-models [search]         List available models (with optional fuzzy search)
   --verbose                      Force verbose startup (overrides quietStartup setting)
+  --approve, -a                  Trust project-local files for this run
+  --no-approve, -na              Ignore project-local files for this run
   --offline                      Disable startup network operations (same as PI_OFFLINE=1)
   --help, -h                     Show this help
   --version, -v                  Show version number
@@ -345,7 +352,7 @@ ${chalk.bold("Environment Variables:")}
   TOGETHER_API_KEY                 - Together AI API key
   OPENROUTER_API_KEY               - OpenRouter API key
   AI_GATEWAY_API_KEY               - Vercel AI Gateway API key
-  ZAI_API_KEY                      - ZAI API key
+  ZAI_API_KEY                      - ZAI Coding Plan API key (Global)
   ZAI_CODING_CN_API_KEY            - ZAI Coding Plan API key (China)
   MISTRAL_API_KEY                  - Mistral API key
   MINIMAX_API_KEY                  - MiniMax API key
